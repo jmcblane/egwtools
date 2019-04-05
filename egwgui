@@ -1,0 +1,221 @@
+#!/usr/bin/ruby
+
+require_relative 'lib/backend'
+require_relative 'lib/reference'
+require 'fox16'
+include Fox
+
+=begin
+
+TODO:
+====
+
+    1) Add search tool
+
+=end
+
+$tree = clean_json("/search/advanced/book/en/info")
+
+class EGWApp < FXMainWindow
+    def initialize(app)
+        super(app, "Unofficial EGW App", :width => 800, :height => 500)
+
+        menubar = FXMenuBar.new(self, nil, FRAME_RAISED|LAYOUT_SIDE_TOP|LAYOUT_FILL_X)
+        @main_categories = FXListBox.new(menubar)
+        sep = FXSeparator.new(menubar, :opts => LAYOUT_FILL_Y|SEPARATOR_GROOVE)
+        @sub_categories = FXListBox.new(menubar)
+        sep = FXSeparator.new(menubar, :opts => LAYOUT_FILL_Y|SEPARATOR_GROOVE)
+        spacer = FXFrame.new(menubar, LAYOUT_FILL_X)
+        @script_books = FXListBox.new(menubar)
+        @script_chap = FXTextField.new(menubar, 3, :opts => TEXTFIELD_NORMAL|TEXTFIELD_INTEGER)
+        @script_verse = FXTextField.new(menubar, 3, :opts => TEXTFIELD_NORMAL|TEXTFIELD_INTEGER|TEXTFIELD_ENTER_ONLY)
+        go_btn = FXButton.new(menubar, "Go!")
+        spacer = FXFrame.new(menubar, LAYOUT_FILL_X)
+        sep = FXSeparator.new(menubar, :opts => LAYOUT_FILL_Y|SEPARATOR_GROOVE)
+        ref_lbl = FXLabel.new(menubar, "Lookup:")
+        @getref = FXTextField.new(menubar, 10, :opts => TEXTFIELD_NORMAL|TEXTFIELD_ENTER_ONLY)
+
+
+        mainframe = FXHorizontalFrame.new(self, LAYOUT_FILL,
+                    :padLeft => 0, :padRight => 0, :padBottom => 0, :padTop => 0)
+
+        column1 = FXVerticalFrame.new(mainframe, LAYOUT_FILL_Y|PACK_UNIFORM_WIDTH,
+                                      :padLeft => 5, :padRight => 0, :padBottom => 5, :padTop => 0)
+
+        subframe1 = FXVerticalFrame.new(column1, FRAME_SUNKEN|FRAME_THICK|LAYOUT_FILL_Y|LAYOUT_FIX_WIDTH,
+                                        :padLeft => 0, :padRight => 0, :padBottom => 0, :padTop => 0, :width => 350)
+        @books = FXList.new(subframe1, :opts => LAYOUT_FILL|LIST_SINGLESELECT|HSCROLLER_NEVER)
+        subframe2 = FXVerticalFrame.new(column1, FRAME_SUNKEN|FRAME_THICK|LAYOUT_FILL_Y|LAYOUT_FIX_WIDTH,
+                                        :padLeft => 0, :padRight => 0, :padBottom => 0, :padTop => 0, :width => 350)
+        @chapters = FXList.new(subframe2, :opts => LAYOUT_FILL|LIST_SINGLESELECT|HSCROLLER_NEVER)
+
+        column2 = FXVerticalFrame.new(mainframe, LAYOUT_FILL,
+                                      :padLeft => 0, :padRight => 5, :padBottom => 5, :padTop => 0)
+
+        text_frame = FXHorizontalFrame.new(column2, FRAME_SUNKEN|FRAME_THICK|LAYOUT_FILL,
+                                           :padLeft => 0, :padRight => 0, :padBottom => 0, :padTop => 0)
+        @text = FXText.new(text_frame, :opts => LAYOUT_FILL|TEXT_WORDWRAP|TEXT_READONLY|TEXT_AUTOINDENT)
+
+ 
+        @main_categories.connect (SEL_COMMAND) do |x, y, z|
+            @main_category, @alt_menu = @main_categories.getItemData(z)
+            self.load_category
+        end
+
+        @sub_categories.connect (SEL_COMMAND) do |x, y, z|
+            @category = @sub_categories.getItemData(z)
+            @books.clearItems
+            @chapters.clearItems
+            self.load_books
+            @books.selectItem(0)
+        end
+
+        @books.connect (SEL_COMMAND) do |x, y, z|
+            @book = @books.getItemData(z)
+            self.load_chapters
+            @chapters.selectItem(0)
+        end
+
+        @chapters.connect (SEL_COMMAND) do |x, y, z|
+            if @chapters.getItemData(z).is_a?(Hash)
+                self.load_scripture_index(@chapters.getItemData(z))
+            else
+                @chapter = @chapters.getItemData(z)
+                self.load_text
+            end
+        end
+
+        @script_verse.connect (SEL_COMMAND) { |x| self.get_scripture_index }
+        @getref.connect (SEL_COMMAND) { |x| self.show_ref(x.text) }
+
+        @script_books.connect (SEL_COMMAND) { |x, y, z| @bible_book = @script_books.getItemData(z) }
+        @script_books.numVisible = 10
+
+        go_btn.connect (SEL_COMMAND) { self.get_scripture_index }
+
+        @main_categories.appendItem("EGW Books", nil, ["books", 0])
+        @main_categories.appendItem("Pioneer Authors", nil, ["apl", 1])
+        @main_categories.appendItem("Reference works", nil, ["ref", 1])
+        @main_categories.appendItem("Periodicals", nil, ["periodical", 1])
+        @main_categories.numVisible = @main_categories.numItems
+        @main_category = "books"
+        self.load_category
+
+        $books_bible.each { |book| @script_books.appendItem(book, nil, book.split.join.downcase) }
+
+    end
+
+    def load_category
+        @sub_categories.clearItems
+        case @main_category
+        when "books"
+            $tree.each { |cat, books| @sub_categories.appendItem(cat['name'], nil, cat['id']) }
+        when "apl"
+            $pioneer_dirs.each { |name, id| @sub_categories.appendItem(name, nil, id) }
+        when "ref"
+            $reference_works.each { |name, id| @sub_categories.appendItem(name, nil, id) }
+        when "periodical"
+            $periodicals.each { |name, id| @sub_categories.appendItem(name, nil, id) }
+        end
+        @sub_categories.numItems < 10 ? @sub_categories.numVisible = @sub_categories.numItems : @sub_categories.numVisible = 10
+    end
+
+    def load_books
+        @books.clearItems
+        @chapters.clearItems
+        if @alt_menu == 1
+            books = clean_json("/content/books/by_folder/#{@category}")
+            books.each { |i| @books.appendItem(i["title"], nil, i["book_id"]) }
+        else
+            books = $tree.select { |key, hash| key['id'] == @category }
+            books[0]["books"].each { |i| @books.appendItem(i["title"], nil, i["pubnr"])}
+        end
+    end
+
+    def load_chapters
+        @chapters.clearItems
+        chapters = book_toc(@book)
+        return if chapters == []
+        chapters.each { |i| @chapters.appendItem(i[:title], nil, i[:para]) }
+    end
+
+    def load_text
+        chapter = get_chapter(@book, @chapter)
+        breaker = "-"*30
+        @text.setText("#{chapter[:title]}\n#{chapter[:refcode]}\n#{breaker}\n\n#{chapter[:text]}", true)
+    end
+
+    def show_ref(ref)
+        return if ref == nil
+        breaker = "-"*30
+        if ref.match?('\.') == true and ref.match?('-') == true
+            paragraphs = []
+            texts = []
+            book = ref.split(" ")[0]
+            page, par = ref.split(" ")[1].split(".")
+            par_b, par_e = par.split("-")
+
+            for i in (par_b.to_i..par_e.to_i)
+                p = "#{book} #{page}.#{i}"
+                info = ref_lookup(p)
+                return if info == nil
+                text = get_paragraph(info[:book], info[:para])
+                paragraphs.push([text[:title], text[:refcode], text[:text]])
+            end
+
+            title = paragraphs[0][0]
+            reference = "#{paragraphs[0][1]} - #{paragraphs[-1][1]}"
+            paragraphs.each { |i| texts.push(Sanitize.fragment(i[2])) }
+            text = texts.join("\n\n")
+            @text.setText("#{title}\n#{reference}\n#{breaker}\n\n#{text}", true)
+
+        else
+            begin reference = ref_lookup(ref) rescue reference = nil end
+            return self.no_results if reference == nil
+
+            book, chapter = reference[:book], reference[:para]
+            ref.match?('\.') == true ? get_ref = get_paragraph(book, chapter) : get_ref = get_chapter(book, chapter)
+
+            @text.setText(Sanitize.fragment("#{get_ref[:title]}\n#{get_ref[:refcode]}\n#{breaker}\n\n#{get_ref[:text]}"), true)
+        end
+    end
+
+    def get_scripture_index
+        @chapters.clearItems
+
+        begin
+            results = get_index_refs(script_index(@bible_book, @script_chap.text, @script_verse.text))
+        rescue
+            results = nil
+        end
+        return self.no_results if results == nil
+
+        results.each { |i| @chapters.appendItem(i[:title].strip!, nil, i) }
+    end
+
+    def load_scripture_index(ref)
+        breaker = "-"*30
+        ref[:title].strip!
+        @text.setText("#{ref[:title]}\n#{ref[:refcode]}\n#{breaker}\n\n#{ref[:text]}", true)
+    end
+
+
+    def no_results
+        oops = FXMessageBox.new(self, "No results", "Sorry, something went wrong.\nProbably just no results.", :opts => MBOX_OK)
+        oops.create
+        return oops.show(PLACEMENT_SCREEN)
+    end
+
+
+    def create
+        super; show(PLACEMENT_SCREEN)
+    end
+end
+
+if __FILE__ == $0
+    FXApp.new do |app|
+        EGWApp.new(app)
+        app.create
+        app.run
+    end
+end

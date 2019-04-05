@@ -1,0 +1,327 @@
+#!/usr/bin/ruby
+
+require_relative "lib/backend"
+require_relative "lib/reference"
+require "tty-prompt"
+
+$prompt = TTY::Prompt.new(help_color: :cyan, interrupt: :exit)
+$prompt.on(:keypress) do |event|
+    if event.value == 'j'
+        $prompt.trigger(:keydown)
+    elsif event.value == 'k'
+        $prompt.trigger(:keyup)
+    elsif event.value == 'l'
+        $prompt.trigger(:keyright)
+    elsif event.value == 'h'
+        $prompt.trigger(:keyleft)
+    elsif event.value == "q"
+        abort
+    end
+end
+$max_lines = `tput lines`.chomp.to_i - 6
+
+def read_chapter(book, para)
+    chap = get_chapter(book, para)
+    IO.popen("#{ENV['PAGER']}", "w") do |f|
+        f.puts chap[:title]
+        f.puts chap[:refcode]
+        f.puts "-"*30
+        f.puts
+        f.puts chap[:text]
+    end
+end
+
+def get_input(whatfor)
+    answer = $prompt.keypress("Would you like to #{whatfor}? (y/N/q)")
+    if answer == "q"
+        abort
+    elsif answer == "y"
+        return true
+    end
+end
+
+def generic_search(query, type)
+    if type == "longindex"
+         b = ARGV[1]
+         c = ARGV[2].split(":")[0]
+         v = ARGV[2].split(":")[1]
+         results = get_index_refs(script_index(b, c, v))
+    else
+        results = search(type, query)
+    end
+
+    total, count = results.length, results.length
+
+    results.each do |ref|
+        system('clear')
+        puts ref[:title]
+        puts ref[:refcode]
+        puts "-"*30 + "\n\n"
+        IO.popen("fold -s", "w") { |f| f.puts ref[:text] + "\n\n" }
+        puts "(#{count}/#{total}) "
+        puts "-"*30
+        if get_input("see the chapter") == true
+            read_chapter(ref[:book], ref[:para])
+        end
+        count -= 1
+        system('clear')
+    end
+end
+
+def do_book(book, menu, which)
+    system("clear")
+    info = ref_lookup(book)
+    toc = book_toc(info[:book])
+    choices = Hash.new
+    choices["Back"] = "back"
+    toc.each { |i| i[:title].gsub!(/—/, " - ") }
+    toc.each { |i| choices[i[:title]] = i[:para] }
+
+    begin
+        answer = $prompt.enum_select("Select chapter to view:", choices, per_page: $max_lines)
+        case answer
+        when "back"
+            return menu2(which) if menu == 1
+            abort
+        else
+            read_chapter(info[:book], answer)
+        end
+    end while answer != "back"
+end
+
+def menu1
+    system("clear")
+    $menu_categories = clean_json("/search/advanced/book/en/info")
+    cat_hash = Hash.new
+    cat_hash['Quit'] = "quit"
+    $menu_categories.each { |cat| cat_hash[cat['name']] = cat['id'] }
+    which = $prompt.enum_select("Select category:", cat_hash, per_page: $max_lines)
+    abort if which == "quit"
+    return menu2(which)
+end
+
+def menu2(category)
+    system("clear")
+    book_hash = Hash.new
+    book_hash['Back'] = "back"
+    books = $menu_categories.select{ |cat| cat['id'] == category }[0]['books']
+    books.each { |book| book_hash[book["title"]] = book["code"] }
+    which = $prompt.enum_select("Select book:", book_hash, per_page: $max_lines)
+    return menu1 if which == "back"
+    return do_book(which, 1, category)
+end
+
+def apl1
+    system("clear")
+    author = $prompt.enum_select("Select author:", $pioneer_dirs, per_page: $max_lines)
+    abort if author == "quit"
+    book_list = clean_json("/content/books/by_folder/#{author}")
+    return apl2(book_list)
+end
+
+def apl2(book_list)
+    system("clear")
+    book_hash = Hash.new
+    book_hash["Back"] = "back"
+    book_list.each { |book| book_hash[book["title"]] = book["code"] }
+    which = $prompt.enum_select("Select book:", book_hash, per_page: $max_lines)
+
+    return apl1 if which == "back"
+
+    do_book(which, nil, nil)
+end
+
+whatdo = ARGV[0]
+
+case whatdo
+when "dictionary"
+    IO.popen("fold -s", "w") { |f| f.puts nwad_lookup(ARGV[1]) }
+
+when "index"
+     if ARGV[2] != nil
+
+        if ARGV[1].is_i? == false
+            b = ARGV[1]
+            c = ARGV[2].split(":")[0]
+            v = ARGV[2].split(":")[1]
+        else
+            b = ARGV[1..2].join("")
+            c = ARGV[3].split(":")[0]
+            v = ARGV[3].split(":")[1]
+        end
+
+        refs = script_index(b, c, v)
+        puts Sanitize.fragment(refs)
+    else
+        help_txt
+    end
+
+when "longindex"
+     if ARGV[2] != nil
+         generic_search(nil, "longindex")
+     else
+         help_txt
+     end
+
+when "get"
+
+    if /-/.match?ARGV[2]
+        par_array = []
+        title = []
+        refcodes = []
+        book, page = ARGV[1], ARGV[2]
+        page, paras  = page.split(".")
+        para_b, para_e = paras.split("-")
+
+        (para_b.to_i..para_e.to_i).each do |i|
+            ref = "#{book} #{page}.#{i}"
+            info = ref_lookup(ref)
+            return if info.nil? == true
+            para = get_paragraph(info[:book], info[:para])
+            par_array.push(para[:text])
+            title.push(para[:title])
+            refcodes.push(para[:refcode])
+        end
+
+        return if par_array == []
+        puts title[0]
+        reference = "#{refcodes[0]} - #{refcodes[-1]}"
+        puts reference
+        puts "-"*30 + "\n\n"
+        text = Sanitize.fragment(par_array.join("\n\n"))
+        IO.popen("fold -s", "w") { |f| f.puts text }
+        IO.popen("xclip", "w") { |f| f.puts "#{text} -- #{reference}" }
+        puts "\n\n---\nText copied to clipboard."
+
+    else
+        ref = ARGV[1..-1].join(" ")
+        info = ref_lookup(ref)
+        return puts "Nothing found." if info.nil? == true
+        para = get_paragraph(info[:book], info[:para])
+        puts para[:title]
+        puts "-"*30 + "\n\n"
+        text = Sanitize.fragment(para[:text])
+        IO.popen("fold -s", "w") { |f| f.puts text }
+        IO.popen("xclip", "w") { |f| f.puts "#{text} -- #{para[:refcode]}" }
+        puts "\n---\nText copied to clipboard."
+    end
+
+when "chapter"
+    info = ref_lookup(ARGV[1..-1].join(" "))
+    read_chapter(info[:book], info[:para])
+
+when "book"
+    do_book(ARGV[1..-1].join(" "), nil, nil)
+
+when "search"
+    generic_search(ARGV[1..-1].join(" "), "egwbooks")
+
+when "apl"
+    generic_search(ARGV[1..-1].join(" "), "apl")
+    
+when "periodicals"
+    generic_search(ARGV[1..-1].join(" "), "periodicals")
+
+when "topical"
+    generic_search(ARGV[1..-1].join(" "), "topical")
+
+when "link"
+    info = ref_lookup(ARGV[1..-1].join(" "))
+    url = "https://m.egwwritings.org/en/book/#{info[:book]}.#{info[:para]}"
+    puts url
+    system("echo -n '#{url}' | xclip")
+    puts "Link copied to clipboard."
+
+when "menu"
+    menu1
+
+when "aplmenu"
+    apl1
+
+when "rand"
+    manna = rand_devotional
+    IO.popen("#{ENV['PAGER']}", "w") do |f|
+        f.puts manna[:title]
+        f.puts manna[:refcode]
+        f.puts "-"*30
+        f.puts
+        f.puts manna[:text]
+    end
+
+else
+    help_txt
+end
+
+BEGIN {
+def help_txt
+    puts <<-EOQ
+
+egwtool [function] [arguments]
+
+    Valid functions:
+
+    search [text to search]
+          Searches through EGW books
+          $ egwtool search obedience of a lesser god
+
+    apl [text to search]
+          Search the Adventist Pioneer Library
+          $ egwtool apl abomination of desolation
+
+    periodicals [text to search]
+          Searches through the periodicals.
+          $ egwtool periodicals The Lord especially blessed
+
+    topical ["text to search"]
+          Look for entries in the topical index
+          $ egwtool topical flesh food
+
+    dictionary [word]
+          Websters 1828 dictionary lookup.
+          $ egwtool dictionary conversation
+
+    index [book] [chapter:verse]
+          Get list of EGW quotes for the verse.
+          $ egwtool index genesis 1:3
+
+    longindex [book] [chapter:verse]
+          Return EGW quotes for verse one at a time
+          Includes option to read full context
+          $ egwtool longindex john 17:3
+
+    get [reference]
+          Returns the reference requested.
+          $ egwtool get GC 17.2
+          $ egwtool get RH April 1 1890 7
+                  Returns this paragraph ^
+
+    chapter [reference]
+          Opens the full chapter where the reference is found.
+          $ egwtool chapter GC 32.1
+
+    book [name or short name]
+          Lists chapters, opens the selected chapter.
+          $ egwtool book Adventist Home
+          $ egwtool book LDE
+
+    link [reference]
+          Gives the link to read the full text online.
+          Also uses xclip to copy to the clipboard.
+          $ egwtool link GC 500
+
+    menu
+          Interactive menu of EGW writings.
+          
+    aplmenu
+          Interactive menu of pioneer authors
+
+    rand
+          Get a random devotional for today.
+
+    help
+          Displays this help.
+
+EOQ
+
+end
+}
