@@ -64,7 +64,7 @@ end
 def get_chapter(book, para)
     chap_json = clean_json("/content/books/#{book}/chapter/#{para}")
     chap_text = []
-    chap_json.each { |par| chap_text.push(Sanitize.fragment(par['content'] + "\n\n")) }
+    chap_json.each { |par| chap_text.push(Sanitize.fragment(par['content'] + " {#{par['refcode_short']}}" + "\n\n")) }
     return { 'title': chap_json[0]['refcode_long'].gsub!(/\(.*\)/, "\n"),
              'refcode': chap_json[0]['refcode_short'],
              'text': chap_text.join }
