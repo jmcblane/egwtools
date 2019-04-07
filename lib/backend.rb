@@ -132,7 +132,7 @@ def devotional
 end
 
 def rand_devotional
-    today = Time.now.strftime("%B %d")
+    today = Time.now.strftime("%B %e")
     entries = clean_json('/search', :params => { query: today, folder: 1227 })
     rand_entry = entries['results'][rand(1..entries['results'].length)] 
     info = get_chapter(rand_entry['para_id'].split(".")[0], rand_entry['para_id'].split(".")[1])
